@@ -200,6 +200,7 @@ public class OkHttpClient implements Cloneable, Call.Factory, WebSocket.Factory 
   final List<ConnectionSpec> connectionSpecs;
   final List<Interceptor> interceptors;
   final List<Interceptor> networkInterceptors;
+  final List<AsyncInterceptor> asyncInterceptors;
   final EventListener.Factory eventListenerFactory;
   final ProxySelector proxySelector;
   final CookieJar cookieJar;
@@ -233,6 +234,7 @@ public class OkHttpClient implements Cloneable, Call.Factory, WebSocket.Factory 
     this.connectionSpecs = builder.connectionSpecs;
     this.interceptors = Util.immutableList(builder.interceptors);
     this.networkInterceptors = Util.immutableList(builder.networkInterceptors);
+    this.asyncInterceptors = Util.immutableList(builder.asyncInterceptors);
     this.eventListenerFactory = builder.eventListenerFactory;
     this.proxySelector = builder.proxySelector;
     this.cookieJar = builder.cookieJar;
@@ -417,6 +419,8 @@ public class OkHttpClient implements Cloneable, Call.Factory, WebSocket.Factory 
     return networkInterceptors;
   }
 
+  public List<AsyncInterceptor> asyncInterceptors() {return asyncInterceptors; }
+
   public EventListener.Factory eventListenerFactory() {
     return eventListenerFactory;
   }
@@ -448,6 +452,7 @@ public class OkHttpClient implements Cloneable, Call.Factory, WebSocket.Factory 
     List<ConnectionSpec> connectionSpecs;
     final List<Interceptor> interceptors = new ArrayList<>();
     final List<Interceptor> networkInterceptors = new ArrayList<>();
+    final List<AsyncInterceptor> asyncInterceptors = new ArrayList<>();
     EventListener.Factory eventListenerFactory;
     ProxySelector proxySelector;
     CookieJar cookieJar;
@@ -499,6 +504,7 @@ public class OkHttpClient implements Cloneable, Call.Factory, WebSocket.Factory 
       this.protocols = okHttpClient.protocols;
       this.connectionSpecs = okHttpClient.connectionSpecs;
       this.interceptors.addAll(okHttpClient.interceptors);
+      this.asyncInterceptors.addAll(okHttpClient.asyncInterceptors);
       this.networkInterceptors.addAll(okHttpClient.networkInterceptors);
       this.eventListenerFactory = okHttpClient.eventListenerFactory;
       this.proxySelector = okHttpClient.proxySelector;
@@ -882,6 +888,16 @@ public class OkHttpClient implements Cloneable, Call.Factory, WebSocket.Factory 
       if (interceptor == null) throw new IllegalArgumentException("interceptor == null");
       networkInterceptors.add(interceptor);
       return this;
+    }
+
+    public Builder addAsyncInterceptor(AsyncInterceptor asyncInterceptor) {
+      if(asyncInterceptor == null) throw new IllegalArgumentException("asyncInterceptor == null");
+      asyncInterceptors.add(asyncInterceptor);
+      return this;
+    }
+
+    public List<AsyncInterceptor> asyncInterceptors() {
+      return asyncInterceptors;
     }
 
     /**

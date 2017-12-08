@@ -18,14 +18,12 @@ package okhttp3;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+
 import okhttp3.internal.NamedRunnable;
 import okhttp3.internal.cache.CacheInterceptor;
 import okhttp3.internal.connection.ConnectInterceptor;
 import okhttp3.internal.connection.StreamAllocation;
-import okhttp3.internal.http.BridgeInterceptor;
-import okhttp3.internal.http.CallServerInterceptor;
-import okhttp3.internal.http.RealInterceptorChain;
-import okhttp3.internal.http.RetryAndFollowUpInterceptor;
+import okhttp3.internal.http.*;
 import okhttp3.internal.platform.Platform;
 
 import static okhttp3.internal.platform.Platform.INFO;
@@ -33,17 +31,16 @@ import static okhttp3.internal.platform.Platform.INFO;
 final class RealCall implements Call {
   final OkHttpClient client;
   final RetryAndFollowUpInterceptor retryAndFollowUpInterceptor;
-
+  /**
+   * The application's original request unadulterated by redirects or auth headers.
+   */
+  final Request originalRequest;
+  final boolean forWebSocket;
   /**
    * There is a cycle between the {@link Call} and {@link EventListener} that makes this awkward.
    * This will be set after we create the call instance then create the event listener instance.
    */
   private EventListener eventListener;
-
-  /** The application's original request unadulterated by redirects or auth headers. */
-  final Request originalRequest;
-  final boolean forWebSocket;
-
   // Guarded by this.
   private boolean executed;
 
@@ -61,11 +58,13 @@ final class RealCall implements Call {
     return call;
   }
 
-  @Override public Request request() {
+  @Override
+  public Request request() {
     return originalRequest;
   }
 
-  @Override public Response execute() throws IOException {
+  @Override
+  public Response execute() throws IOException {
     synchronized (this) {
       if (executed) throw new IllegalStateException("Already Executed");
       executed = true;
@@ -90,7 +89,8 @@ final class RealCall implements Call {
     retryAndFollowUpInterceptor.setCallStackTrace(callStackTrace);
   }
 
-  @Override public void enqueue(Callback responseCallback) {
+  @Override
+  public void enqueue(Callback responseCallback) {
     synchronized (this) {
       if (executed) throw new IllegalStateException("Already Executed");
       executed = true;
@@ -100,25 +100,63 @@ final class RealCall implements Call {
     client.dispatcher().enqueue(new AsyncCall(responseCallback));
   }
 
-  @Override public void cancel() {
+  @Override
+  public void cancel() {
     retryAndFollowUpInterceptor.cancel();
   }
 
-  @Override public synchronized boolean isExecuted() {
+  @Override
+  public synchronized boolean isExecuted() {
     return executed;
   }
 
-  @Override public boolean isCanceled() {
+  @Override
+  public boolean isCanceled() {
     return retryAndFollowUpInterceptor.isCanceled();
   }
 
   @SuppressWarnings("CloneDoesntCallSuperClone") // We are a final type & this saves clearing state.
-  @Override public RealCall clone() {
+  @Override
+  public RealCall clone() {
     return RealCall.newRealCall(client, originalRequest, forWebSocket);
   }
 
   StreamAllocation streamAllocation() {
     return retryAndFollowUpInterceptor.streamAllocation();
+  }
+
+  /**
+   * Returns a string that describes this call. Doesn't include a full URL as that might contain
+   * sensitive information.
+   */
+  String toLoggableString() {
+    return (isCanceled() ? "canceled " : "")
+            + (forWebSocket ? "web socket" : "call")
+            + " to " + redactedUrl();
+  }
+
+  String redactedUrl() {
+    return originalRequest.url().redact();
+  }
+
+  Response getResponseWithInterceptorChain() throws IOException {
+    // Build a full stack of interceptors.
+    List<Interceptor> interceptors = new ArrayList<>();
+    interceptors.addAll(client.interceptors());
+    interceptors.add(retryAndFollowUpInterceptor);
+    interceptors.add(new BridgeInterceptor(client.cookieJar()));
+    interceptors.add(new CacheInterceptor(client.internalCache()));
+    interceptors.add(new ConnectInterceptor(client));
+    if (!forWebSocket) {
+      interceptors.addAll(client.networkInterceptors());
+    }
+    interceptors.add(new CallServerInterceptor(forWebSocket));
+
+    Interceptor.Chain chain = new RealInterceptorChain(interceptors, null, null, null, 0,
+            originalRequest, this, eventListener, client.connectTimeoutMillis(),
+            client.readTimeoutMillis(), client.writeTimeoutMillis());
+
+    return chain.proceed(originalRequest);
   }
 
   final class AsyncCall extends NamedRunnable {
@@ -141,16 +179,16 @@ final class RealCall implements Call {
       return RealCall.this;
     }
 
-    @Override protected void execute() {
+    @Override
+    protected void execute() {
       boolean signalledCallback = false;
       try {
-        Response response = getResponseWithInterceptorChain();
+        executeWithAsyncInterceptorChain();
         if (retryAndFollowUpInterceptor.isCanceled()) {
           signalledCallback = true;
           responseCallback.onFailure(RealCall.this, new IOException("Canceled"));
         } else {
           signalledCallback = true;
-          responseCallback.onResponse(RealCall.this, response);
         }
       } catch (IOException e) {
         if (signalledCallback) {
@@ -161,42 +199,51 @@ final class RealCall implements Call {
           responseCallback.onFailure(RealCall.this, e);
         }
       } finally {
-        client.dispatcher().finished(this);
+//        client.dispatcher().finished(this);
       }
     }
-  }
 
-  /**
-   * Returns a string that describes this call. Doesn't include a full URL as that might contain
-   * sensitive information.
-   */
-  String toLoggableString() {
-    return (isCanceled() ? "canceled " : "")
-        + (forWebSocket ? "web socket" : "call")
-        + " to " + redactedUrl();
-  }
+    private void executeWithAsyncInterceptorChain() throws IOException {
+      List<AsyncInterceptor> asyncInterceptors = new ArrayList<>();
+      asyncInterceptors.add(new AsyncInterceptorCallbackAdapter());
+      asyncInterceptors.addAll(client.asyncInterceptors());
+      asyncInterceptors.add(new SyncInterceptorExecutor());
 
-  String redactedUrl() {
-    return originalRequest.url().redact();
-  }
-
-  Response getResponseWithInterceptorChain() throws IOException {
-    // Build a full stack of interceptors.
-    List<Interceptor> interceptors = new ArrayList<>();
-    interceptors.addAll(client.interceptors());
-    interceptors.add(retryAndFollowUpInterceptor);
-    interceptors.add(new BridgeInterceptor(client.cookieJar()));
-    interceptors.add(new CacheInterceptor(client.internalCache()));
-    interceptors.add(new ConnectInterceptor(client));
-    if (!forWebSocket) {
-      interceptors.addAll(client.networkInterceptors());
+      RealAsyncInterceptorChain chain = new RealAsyncInterceptorChain(asyncInterceptors, 0, originalRequest, null, RealCall.this, eventListener, client.connectTimeoutMillis(), client.readTimeoutMillis(), client.writeTimeoutMillis());
+      chain.proceed(originalRequest);
     }
-    interceptors.add(new CallServerInterceptor(forWebSocket));
 
-    Interceptor.Chain chain = new RealInterceptorChain(interceptors, null, null, null, 0,
-        originalRequest, this, eventListener, client.connectTimeoutMillis(),
-        client.readTimeoutMillis(), client.writeTimeoutMillis());
+    private final class AsyncInterceptorCallbackAdapter implements AsyncInterceptor {
 
-    return chain.proceed(originalRequest);
+      @Override
+      public void interceptRequest(Chain chain) throws IOException {
+        chain.proceed(chain.request());
+      }
+
+      @Override
+      public void interceptResponse(Chain chain) {
+        try {
+          responseCallback.onResponse(RealCall.this, chain.response());
+        } catch (IOException e) {
+          eventListener.callFailed(RealCall.this, e);
+          responseCallback.onFailure(RealCall.this, e);
+        } finally {
+          client.dispatcher().finished(AsyncCall.this);
+        }
+      }
+    }
+
+    private final class SyncInterceptorExecutor implements AsyncInterceptor {
+
+      @Override
+      public void interceptRequest(Chain chain) throws IOException {
+        chain.proceed(getResponseWithInterceptorChain());
+      }
+
+      @Override
+      public void interceptResponse(Chain chain) throws IOException {
+        //do nothing.
+      }
+    }
   }
 }
